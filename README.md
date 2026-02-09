@@ -1,80 +1,20 @@
-# anthropic-proxy-rs
+# Proxy-Multi-API-Integration
 
-High-performance Rust proxy that translates Anthropic API requests to OpenAI-compatible format. Use Claude Code, Claude Desktop, or any Anthropic API client with OpenRouter, native OpenAI, or any OpenAI-compatible endpoint.
+## Overview
 
-## Features
+Proxy-Multi-API-Integration is a high-performance proxy server written in Rust. It accepts requests in the Anthropic Messages API format and forwards them to any OpenAI-compatible HTTP API, translating request and response payloads so that Anthropic clients work unchanged against non-Anthropic backends.
 
-- **Fast & Lightweight**: Written in Rust with async I/O (~3MB binary)
-- **Full Streaming**: Server-Sent Events (SSE) with real-time responses
-- **Tool Calling**: Complete support for function/tool calling
-- **Universal**: Works with any OpenAI-compatible API (OpenRouter, OpenAI, Azure, local LLMs)
-- **Extended Thinking**: Supports Claude's reasoning mode
-- **Drop-in Replacement**: Compatible with official Anthropic SDKs
-
-## Quick Start
-
-> **Note**: Using [Task](https://taskfile.dev) is currently recommended. Install with `brew install go-task` (macOS) or see the [installation guide](https://taskfile.dev/installation/). Releases with build binaries will be made soon.
-
-
-```bash
-# Install Rust (if needed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-### Build and install to PATH with task
-
-```bash
-task local-install
-```
-
-# Run from anywhere
-```bash
-UPSTREAM_BASE_URL=https://openrouter.ai/api \
-UPSTREAM_API_KEY=sk-or-... \
-anthropic-proxy
-```
-
-# Or build and run manually
-```bash
-cargo build --release
-UPSTREAM_BASE_URL=https://api.openai.com \
-UPSTREAM_API_KEY=sk-... \
-./target/release/anthropic-proxy
-```
+Typical use cases: point Claude Code, Claude Desktop, or other Anthropic API clients at OpenRouter, at OpenAI, at Azure OpenAI, or at a local OpenAI-compatible server (e.g. Ollama, LiteLLM). You run the proxy once, set your upstream URL and optional API key, and configure the client to use the proxy as if it were the official Anthropic API. The proxy listens on a configurable port (default 3000), exposes the Anthropic-style `/v1/messages` endpoint, and translates to and from the upstream `/v1/chat/completions` format. It supports streaming (SSE), tool/function calling, system prompts, and extended thinking; when thinking is requested it can route to a different model via environment variables. Configuration is via environment variables or `.env` files, with optional daemon mode on Unix.
 
 ## Configuration
 
-### Command Line Options
+### Environment variables
 
-```bash
-anthropic-proxy --help
-```
-
-**Commands:**
-| Command | Description |
-|---------|-------------|
-| `stop` | Stop running daemon |
-| `status` | Check daemon status |
-
-**Options:**
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--config <FILE>` | `-c` | Path to custom .env file |
-| `--debug` | `-d` | Enable debug logging |
-| `--verbose` | `-v` | Enable verbose logging (logs full request/response bodies) |
-| `--port <PORT>` | `-p` | Port to listen on (overrides PORT env var) |
-| `--daemon` | | Run as background daemon |
-| `--pid-file <FILE>` | | PID file path (default: `/tmp/anthropic-proxy.pid`) |
-| `--help` | `-h` | Print help information |
-| `--version` | `-V` | Print version |
-
-### Environment Variables
-
-Configuration can be set via environment variables or `.env` file:
+Configuration can be set via environment variables or a `.env` file:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `UPSTREAM_BASE_URL` | **Yes** | - | OpenAI-compatible endpoint URL |
+| `UPSTREAM_BASE_URL` | Yes | - | OpenAI-compatible endpoint URL |
 | `UPSTREAM_API_KEY` | No* | - | API key for upstream service |
 | `PORT` | No | `3000` | Server port |
 | `REASONING_MODEL` | No | (uses request model) | Model to use when extended thinking is enabled** |
@@ -82,26 +22,27 @@ Configuration can be set via environment variables or `.env` file:
 | `DEBUG` | No | `false` | Enable debug logging (`1` or `true`) |
 | `VERBOSE` | No | `false` | Enable verbose logging (`1` or `true`) |
 
-\* Required if your upstream endpoint needs authentication  
-\*\* The proxy automatically detects when a request has extended thinking enabled (via the `thinking` parameter in the request) and routes it to `REASONING_MODEL`. Standard requests without thinking use `COMPLETION_MODEL`. This allows you to use more powerful models for reasoning tasks and faster/cheaper models for simple completions. If not set, the model from the client request is used.
+\* Required if your upstream endpoint needs authentication.
 
-### Configuration File Locations
+\*\* The proxy detects when a request has extended thinking enabled (via the `thinking` parameter) and routes it to `REASONING_MODEL`. Standard requests use `COMPLETION_MODEL`. You can use a more capable model for reasoning and a faster or cheaper model for simple completions. If not set, the model from the client request is used.
 
-The proxy searches for `.env` files in the following order:
+### Configuration file locations
 
-1. Custom path specified with `--config` flag
+The proxy looks for `.env` files in this order:
+
+1. Custom path given with `--config`
 2. Current working directory (`./.env`)
 3. User home directory (`~/.anthropic-proxy.env`)
 4. System-wide config (`/etc/anthropic-proxy/.env`)
 
-If no `.env` file is found, the proxy uses environment variables from your shell.
+If no `.env` is found, it uses environment variables from the shell.
 
-## Usage Examples
+## Usage examples
 
 ### With Claude Code
 
 ```bash
-# Start proxy as daemon and use Claude Code immediately
+# Start proxy as daemon and use Claude Code
 anthropic-proxy --daemon && ANTHROPIC_BASE_URL=http://localhost:3000 claude
 
 # Or use separate terminals:
@@ -112,92 +53,87 @@ anthropic-proxy
 ANTHROPIC_BASE_URL=http://localhost:3000 claude
 ```
 
-### With Debug Logging
+### With debug logging
 
 ```bash
-# Enable debug logging via CLI flag
+# Via CLI flag
 anthropic-proxy --debug
 
-# Or via environment variable
+# Via environment variable
 DEBUG=true anthropic-proxy
 
-# Enable verbose logging (logs full request/response bodies)
+# Verbose (full request/response bodies)
 anthropic-proxy --verbose
 ```
 
-### With Custom Config File
+### With custom config file
 
 ```bash
-# Use a custom .env file
 anthropic-proxy --config /path/to/my-config.env
 
-# Or place it in your home directory
+# Or use home directory config
 cp .env ~/.anthropic-proxy.env
 anthropic-proxy
 ```
 
-### With Custom Model Overrides
+### With custom model overrides
 
 ```bash
-# Use different models for reasoning vs standard completion
-# Reasoning model is used when extended thinking is enabled in the request
-# Completion model is used for standard requests without thinking
+# Different models for reasoning vs standard completion
 UPSTREAM_BASE_URL=https://openrouter.ai/api \
   UPSTREAM_API_KEY=sk-or-... \
   REASONING_MODEL=anthropic/claude-3.5-sonnet \
   COMPLETION_MODEL=anthropic/claude-3-haiku \
   PORT=8080 \
   anthropic-proxy
-
-# This allows cost optimization: use powerful models for complex reasoning,
-# and faster/cheaper models for simple completions
 ```
 
-### Running as Daemon
+This allows using a stronger model for reasoning and a faster or cheaper one for simple completions.
+
+### Running as daemon
 
 ```bash
-# Start as background daemon
+# Start in background
 anthropic-proxy --daemon
 
-# Check daemon status
+# Check status
 anthropic-proxy status
 
-# Stop daemon
+# Stop
 anthropic-proxy stop
 
-# View daemon logs
+# View logs
 tail -f /tmp/anthropic-proxy.log
 
-# Custom PID file location
+# Custom PID file
 anthropic-proxy --daemon --pid-file ~/.anthropic-proxy.pid
 anthropic-proxy stop --pid-file ~/.anthropic-proxy.pid
 ```
 
-> **Note**: When running as daemon, logs are written to `/tmp/anthropic-proxy.log`
+When running as a daemon, logs go to `/tmp/anthropic-proxy.log`.
 
-## Supported Features
+## Supported features
 
-✅ Text messages  
-✅ System prompts (single and multiple)  
-✅ Image content (base64)  
-✅ Tool/function calling  
-✅ Tool results  
-✅ Streaming responses  
-✅ Extended thinking mode (automatic model routing)  
-✅ Temperature, top_p, top_k  
-✅ Stop sequences  
-✅ Max tokens  
+- Text messages
+- System prompts (single and multiple)
+- Image content (base64)
+- Tool/function calling
+- Tool results
+- Streaming responses
+- Extended thinking mode (automatic model routing)
+- Temperature, top_p, top_k
+- Stop sequences
+- Max tokens
 
-> **Note**: Make sure your upstream model supports tool use. Especially if you are using this proxy for coding agents like Claude Code.
+Ensure your upstream model supports tool use if you use this proxy with coding agents like Claude Code.
 
-### Extended Thinking Mode
+### Extended thinking mode
 
-The proxy automatically detects when a request includes the `thinking` parameter (Claude Codes's for example) and routes it to the model specified in `REASONING_MODEL`. Requests without thinking use `COMPLETION_MODEL`. 
+The proxy detects the `thinking` parameter (e.g. from Claude Code) and routes those requests to `REASONING_MODEL`. Requests without thinking use `COMPLETION_MODEL`. If these variables are not set, the proxy uses the model from the client request.
 
-If model override variables are not set, the proxy uses the model specified in the client request.
+## Known limitations
 
-## Known Limitations
-The following Anthropic API features are **not supported** currently (Claude Code and similar tools working without these parameters):):
+The following Anthropic API features are not supported (Claude Code and similar tools work without them):
 
 - `tool_choice` parameter (always uses `auto`)
 - `service_tier` parameter
@@ -210,40 +146,36 @@ The following Anthropic API features are **not supported** currently (Claude Cod
 - Files API
 - Admin API
 
-## Troubleshooting & Known Pitfalls
+## Troubleshooting
 
-**Error: `UPSTREAM_BASE_URL is required`**  
-→ You must set the upstream endpoint URL. Examples:
-  - OpenRouter: `https://openrouter.ai/api`
-  - OpenAI: `https://api.openai.com`
-  - Local: `http://localhost:11434`
+**Error: `UPSTREAM_BASE_URL is required`**
 
-**Error: `405 Method Not Allowed`**  
-→ Your `UPSTREAM_BASE_URL` likely ends with `/v1`. Remove it!
-  - ❌ Wrong: `https://openrouter.ai/api/v1`
-  - ✅ Correct: `https://openrouter.ai/api`
-  - The proxy automatically adds `/v1/chat/completions`
+Set the upstream endpoint URL. Examples:
+- OpenRouter: `https://openrouter.ai/api`
+- OpenAI: `https://api.openai.com`
+- Local: `http://localhost:11434`
 
-**Model not found errors**  
-→ Set `REASONING_MODEL` and `COMPLETION_MODEL` to override the models from client requests
+**Error: `405 Method Not Allowed`**
+
+`UPSTREAM_BASE_URL` probably ends with `/v1`. Remove it. The proxy adds `/v1/chat/completions` itself.
+
+- Wrong: `https://openrouter.ai/api/v1`
+- Correct: `https://openrouter.ai/api`
+
+**Model not found errors**
+
+Set `REASONING_MODEL` and `COMPLETION_MODEL` to override the models from client requests.
 
 ## License
 
-MIT License - Copyright (c) 2025 m0n0x41d (Ivan Zakutnii)
-
-See [LICENSE](LICENSE) for details.
+MIT License. Copyright (c) 2025 m0n0x41d (Ivan Zakutnii). See the LICENSE file in the repository for details.
 
 ## Contributing
 
-Contributions welcome! Please:
+Contributions are welcome. Suggested steps:
+
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Run `cargo test && cargo clippy`
 5. Submit a pull request
-
-## Links
-
-- [Anthropic API Documentation](https://docs.anthropic.com/)
-- [OpenRouter Documentation](https://openrouter.ai/docs)
-- [Rust Documentation](https://doc.rust-lang.org/)
