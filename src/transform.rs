@@ -1,74 +1,72 @@
+//! Request/response translation between Anthropic Messages API and OpenAI chat completions.
+
 use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use serde_json::{json, Value};
 
-/// Transform Anthropic request to OpenAI format
+/// Picks the model name: reasoning vs completion from config or request.
+fn select_model(config: &Config, req: &anthropic::AnthropicRequest, has_thinking: bool) -> String {
+    let fallback = || req.model.clone();
+    if has_thinking {
+        config
+            .reasoning_model
+            .clone()
+            .unwrap_or_else(fallback)
+    } else {
+        config
+            .completion_model
+            .clone()
+            .unwrap_or_else(fallback)
+    }
+}
+
+/// Returns true if the request has extended thinking enabled (e.g. thinking.type == "enabled").
+fn has_thinking_enabled(extra: &Value) -> bool {
+    extra
+        .get("thinking")
+        .and_then(|v| v.as_object())
+        .map(|o| o.get("type").and_then(|t| t.as_str()) == Some("enabled"))
+        .unwrap_or(false)
+}
+
+/// Converts an Anthropic request into an OpenAI chat completions request.
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
 ) -> ProxyResult<openai::OpenAIRequest> {
-    // Determine model based on thinking parameter
-    let has_thinking = req
-        .extra
-        .get("thinking")
-        .and_then(|v| v.as_object())
-        .map(|o| o.get("type").and_then(|t| t.as_str()) == Some("enabled"))
-        .unwrap_or(false);
+    let has_thinking = has_thinking_enabled(&req.extra);
+    let model = select_model(config, &req, has_thinking);
 
-    // Use configured model or fall back to the model from the request
-    let model = if has_thinking {
-        config.reasoning_model.clone()
-            .or_else(|| Some(req.model.clone()))
-            .unwrap_or_else(|| req.model.clone())
-    } else {
-        config.completion_model.clone()
-            .or_else(|| Some(req.model.clone()))
-            .unwrap_or_else(|| req.model.clone())
-    };
-
-    // Convert messages
     let mut openai_messages = Vec::new();
 
-    // Add system message if present
     if let Some(system) = req.system {
         match system {
             anthropic::SystemPrompt::Single(text) => {
-                openai_messages.push(openai::Message {
-                    role: "system".to_string(),
-                    content: Some(openai::MessageContent::Text(text)),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: None,
-                });
+                openai_messages.push(openai_message("system", Some(openai::MessageContent::Text(text)), None, None));
             }
             anthropic::SystemPrompt::Multiple(messages) => {
                 for msg in messages {
-                    openai_messages.push(openai::Message {
-                        role: "system".to_string(),
-                        content: Some(openai::MessageContent::Text(msg.text)),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
+                    openai_messages.push(openai_message(
+                        "system",
+                        Some(openai::MessageContent::Text(msg.text)),
+                        None,
+                        None,
+                    ));
                 }
             }
         }
     }
 
-    // Convert user/assistant messages
     for msg in req.messages {
-        let converted = convert_message(msg)?;
-        openai_messages.extend(converted);
+        openai_messages.extend(convert_message(msg)?);
     }
 
-    // Convert tools
     let tools = req.tools.and_then(|tools| {
         let filtered: Vec<_> = tools
             .into_iter()
             .filter(|t| t.tool_type.as_deref() != Some("BatchTool"))
             .collect();
-
         if filtered.is_empty() {
             None
         } else {
@@ -101,19 +99,33 @@ pub fn anthropic_to_openai(
     })
 }
 
-/// Convert a single Anthropic message to one or more OpenAI messages
+fn openai_message(
+    role: &str,
+    content: Option<openai::MessageContent>,
+    tool_calls: Option<Vec<openai::ToolCall>>,
+    tool_call_id: Option<String>,
+) -> openai::Message {
+    openai::Message {
+        role: role.to_string(),
+        content,
+        tool_calls,
+        tool_call_id,
+        name: None,
+    }
+}
+
+/// Converts one Anthropic message into one or more OpenAI messages.
 fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>> {
     let mut result = Vec::new();
 
     match msg.content {
         anthropic::MessageContent::Text(text) => {
-            result.push(openai::Message {
-                role: msg.role,
-                content: Some(openai::MessageContent::Text(text)),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            });
+            result.push(openai_message(
+                &msg.role,
+                Some(openai::MessageContent::Text(text)),
+                None,
+                None,
+            ));
         }
         anthropic::MessageContent::Blocks(blocks) => {
             let mut current_content_parts = Vec::new();
@@ -125,23 +137,17 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                         current_content_parts.push(openai::ContentPart::Text { text });
                     }
                     anthropic::ContentBlock::Image { source } => {
-                        let data_url = format!(
-                            "data:{};base64,{}",
-                            source.media_type, source.data
-                        );
+                        let data_url = format!("data:{};base64,{}", source.media_type, source.data);
                         current_content_parts.push(openai::ContentPart::ImageUrl {
                             image_url: openai::ImageUrl { url: data_url },
                         });
                     }
                     anthropic::ContentBlock::ToolUse { id, name, input } => {
+                        let args = serde_json::to_string(&input).map_err(ProxyError::from)?;
                         tool_calls.push(openai::ToolCall {
                             id,
                             call_type: "function".to_string(),
-                            function: openai::FunctionCall {
-                                name,
-                                arguments: serde_json::to_string(&input)
-                                    .map_err(|e| ProxyError::Serialization(e))?,
-                            },
+                            function: openai::FunctionCall { name, arguments: args },
                         });
                     }
                     anthropic::ContentBlock::ToolResult {
@@ -149,22 +155,17 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                         content,
                         ..
                     } => {
-                        // Tool results become separate messages with role "tool"
-                        result.push(openai::Message {
-                            role: "tool".to_string(),
-                            content: Some(openai::MessageContent::Text(content)),
-                            tool_calls: None,
-                            tool_call_id: Some(tool_use_id),
-                            name: None,
-                        });
+                        result.push(openai_message(
+                            "tool",
+                            Some(openai::MessageContent::Text(content)),
+                            None,
+                            Some(tool_use_id),
+                        ));
                     }
-                    anthropic::ContentBlock::Thinking { .. } => {
-                        // Skip thinking blocks in request
-                    }
+                    anthropic::ContentBlock::Thinking { .. } => {}
                 }
             }
 
-            // Add message with content and/or tool calls
             if !current_content_parts.is_empty() || !tool_calls.is_empty() {
                 let content = if current_content_parts.is_empty() {
                     None
@@ -179,17 +180,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                     Some(openai::MessageContent::Parts(current_content_parts))
                 };
 
-                result.push(openai::Message {
-                    role: msg.role,
-                    content,
-                    tool_calls: if tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(tool_calls)
-                    },
-                    tool_call_id: None,
-                    name: None,
-                });
+                result.push(openai_message(&msg.role, content, Some(tool_calls).filter(|t| !t.is_empty()), None));
             }
         }
     }
@@ -197,30 +188,25 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
     Ok(result)
 }
 
-/// Clean JSON schema by removing unsupported formats
+/// Removes JSON schema fields that some OpenAI-compatible backends reject (e.g. "format": "uri").
 fn clean_schema(mut schema: Value) -> Value {
     if let Some(obj) = schema.as_object_mut() {
-        // Remove "format": "uri"
         if obj.get("format").and_then(|v| v.as_str()) == Some("uri") {
             obj.remove("format");
         }
-
-        // Recursively clean nested schemas
         if let Some(properties) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
             for (_, value) in properties.iter_mut() {
                 *value = clean_schema(value.clone());
             }
         }
-
         if let Some(items) = obj.get_mut("items") {
             *items = clean_schema(items.clone());
         }
     }
-
     schema
 }
 
-/// Transform OpenAI response to Anthropic format
+/// Converts an OpenAI chat completions response into Anthropic message format.
 pub fn openai_to_anthropic(
     resp: openai::OpenAIResponse,
 ) -> ProxyResult<anthropic::AnthropicResponse> {
@@ -231,7 +217,6 @@ pub fn openai_to_anthropic(
 
     let mut content = Vec::new();
 
-    // Add text content if present
     if let Some(text) = &choice.message.content {
         if !text.is_empty() {
             content.push(anthropic::ResponseContent::Text {
@@ -241,12 +226,10 @@ pub fn openai_to_anthropic(
         }
     }
 
-    // Add tool calls if present
     if let Some(tool_calls) = &choice.message.tool_calls {
         for tool_call in tool_calls {
             let input: Value = serde_json::from_str(&tool_call.function.arguments)
                 .unwrap_or_else(|_| json!({}));
-
             content.push(anthropic::ResponseContent::ToolUse {
                 content_type: "tool_use".to_string(),
                 id: tool_call.id.clone(),
@@ -259,13 +242,7 @@ pub fn openai_to_anthropic(
     let stop_reason = choice
         .finish_reason
         .as_ref()
-        .map(|r| match r.as_str() {
-            "tool_calls" => "tool_use",
-            "stop" => "end_turn",
-            "length" => "max_tokens",
-            _ => "end_turn",
-        })
-        .map(String::from);
+        .and_then(|r| map_stop_reason(Some(r)));
 
     Ok(anthropic::AnthropicResponse {
         id: resp.id,
@@ -282,7 +259,7 @@ pub fn openai_to_anthropic(
     })
 }
 
-/// Map OpenAI finish reason to Anthropic stop reason
+/// Maps OpenAI finish_reason to Anthropic stop_reason.
 pub fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
     finish_reason.map(|r| match r {
         "tool_calls" => "tool_use",
