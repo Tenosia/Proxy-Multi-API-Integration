@@ -170,6 +170,11 @@ Set `REASONING_MODEL` and `COMPLETION_MODEL` to override the models from client 
 
 MIT License. Copyright (c) 2025 m0n0x41d (Ivan Zakutnii). See the LICENSE file in the repository for details.
 
+## Build profiles
+
+- **Release (default)**: Optimized for binary size (`cargo build --release`). Best for deployment.
+- **Release-fast**: Optimized for runtime speed (`cargo build --profile release-fast`). Use when latency matters more than binary size.
+
 ## Contributing
 
 Contributions are welcome. Suggested steps:
