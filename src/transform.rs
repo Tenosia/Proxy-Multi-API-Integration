@@ -73,13 +73,17 @@ pub fn anthropic_to_openai(
             Some(
                 filtered
                     .into_iter()
-                    .map(|t| openai::Tool {
-                        tool_type: "function".to_string(),
-                        function: openai::Function {
-                            name: t.name,
-                            description: t.description,
-                            parameters: clean_schema(t.input_schema),
-                        },
+                    .map(|t| {
+                        let mut parameters = t.input_schema;
+                        clean_schema(&mut parameters);
+                        openai::Tool {
+                            tool_type: "function".to_string(),
+                            function: openai::Function {
+                                name: t.name,
+                                description: t.description,
+                                parameters,
+                            },
+                        }
                     })
                     .collect(),
             )
@@ -189,21 +193,20 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
 }
 
 /// Removes JSON schema fields that some OpenAI-compatible backends reject (e.g. "format": "uri").
-fn clean_schema(mut schema: Value) -> Value {
+fn clean_schema(schema: &mut Value) {
     if let Some(obj) = schema.as_object_mut() {
         if obj.get("format").and_then(|v| v.as_str()) == Some("uri") {
             obj.remove("format");
         }
         if let Some(properties) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
             for (_, value) in properties.iter_mut() {
-                *value = clean_schema(value.clone());
+                clean_schema(value);
             }
         }
         if let Some(items) = obj.get_mut("items") {
-            *items = clean_schema(items.clone());
+            clean_schema(items);
         }
     }
-    schema
 }
 
 /// Converts an OpenAI chat completions response into Anthropic message format.

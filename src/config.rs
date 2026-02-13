@@ -21,6 +21,8 @@ pub mod env_keys {
 pub struct Config {
     pub port: u16,
     pub base_url: String,
+    /// Cached URL for upstream chat completions (avoids format! on every request).
+    pub(crate) chat_completions_url: String,
     pub api_key: Option<String>,
     pub reasoning_model: Option<String>,
     pub completion_model: Option<String>,
@@ -115,9 +117,12 @@ impl Config {
         let debug = Self::env_bool(DEBUG);
         let verbose = Self::env_bool(VERBOSE);
 
+        let chat_completions_url = format!("{}/v1/chat/completions", base_url);
+
         Ok(Config {
             port,
             base_url,
+            chat_completions_url,
             api_key,
             reasoning_model,
             completion_model,
@@ -127,7 +132,8 @@ impl Config {
     }
 
     /// URL for the upstream chat completions endpoint.
-    pub fn chat_completions_url(&self) -> String {
-        format!("{}/v1/chat/completions", self.base_url)
+    #[inline]
+    pub fn chat_completions_url(&self) -> &str {
+        &self.chat_completions_url
     }
 }

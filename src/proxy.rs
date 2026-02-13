@@ -14,17 +14,24 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::json;
+use std::sync::OnceLock;
 use std::sync::Arc;
 use std::time::Duration;
 
 const UPSTREAM_TIMEOUT_SECS: u64 = 300;
 
-/// SSE content type and cache headers for streaming responses.
-const SSE_HEADERS: [(&'static str, &'static str); 3] = [
-    ("Content-Type", "text/event-stream"),
-    ("Cache-Control", "no-cache"),
-    ("Connection", "keep-alive"),
-];
+/// SSE headers built once for streaming responses.
+static SSE_HEADERS: OnceLock<HeaderMap> = OnceLock::new();
+
+fn sse_header_map() -> &'static HeaderMap {
+    SSE_HEADERS.get_or_init(|| {
+        let mut h = HeaderMap::new();
+        h.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+        h.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+        h.insert("Connection", HeaderValue::from_static("keep-alive"));
+        h
+    })
+}
 
 /// Entrypoint: parse Anthropic request, transform to OpenAI, call upstream, transform response.
 pub async fn proxy_handler(
@@ -149,12 +156,7 @@ async fn handle_streaming(
     let stream = response.bytes_stream();
     let sse_stream = create_sse_stream(stream);
 
-    let mut headers = HeaderMap::new();
-    for (name, value) in SSE_HEADERS {
-        headers.insert(name, HeaderValue::from_static(value));
-    }
-
-    Ok((headers, Body::from_stream(sse_stream)).into_response())
+    Ok((sse_header_map().clone(), Body::from_stream(sse_stream)).into_response())
 }
 
 #[inline]
@@ -183,7 +185,7 @@ fn create_sse_stream(
 
                     while let Some(pos) = buffer.find("\n\n") {
                         let line = buffer[..pos].to_string();
-                        buffer = buffer[pos + 2..].to_string();
+                        buffer.drain(..=pos + 1);
 
                         if line.trim().is_empty() {
                             continue;
