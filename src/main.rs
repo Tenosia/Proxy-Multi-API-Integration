@@ -14,6 +14,7 @@ use cli::{Cli, Command};
 use config::Config;
 use daemonize::Daemonize;
 use reqwest::Client;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -110,7 +111,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     if let Some(ref model) = config.completion_model {
         tracing::info!("Completion Model Override: {}", model);
     }
-    if config.api_key.is_some() {
+    if config.auth_header_value.is_some() {
         tracing::info!("API Key: configured");
     } else {
         tracing::info!("API Key: not set (using unauthenticated endpoint)");
@@ -132,13 +133,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
         .route("/health", axum::routing::get(health_handler))
-        .layer(Extension(config.clone()))
+        .layer(Extension(Arc::clone(&config)))
         .layer(Extension(client))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    let addr = format!("0.0.0.0:{}", config.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Proxy ready to accept requests");
