@@ -23,7 +23,8 @@ pub struct Config {
     pub base_url: String,
     /// Cached URL for upstream chat completions (avoids format! on every request).
     pub(crate) chat_completions_url: String,
-    pub api_key: Option<String>,
+    /// Cached "Bearer <key>" when API key is set (avoids format! on every request).
+    pub(crate) auth_header_value: Option<String>,
     pub reasoning_model: Option<String>,
     pub completion_model: Option<String>,
     pub debug: bool,
@@ -66,8 +67,8 @@ impl Config {
     fn env_bool(key: &str) -> bool {
         env::var(key)
             .map(|v| {
-                let v = v.to_lowercase();
-                v == "1" || v == "true" || v == "yes"
+                let v = v.trim();
+                v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
             })
             .unwrap_or(false)
     }
@@ -107,10 +108,11 @@ impl Config {
             );
         }
 
-        let api_key = env::var(UPSTREAM_API_KEY)
+        let auth_header_value = env::var(UPSTREAM_API_KEY)
             .or_else(|_| env::var(OPENROUTER_API_KEY))
             .ok()
-            .filter(|k| !k.is_empty());
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("Bearer {k}"));
 
         let reasoning_model = env::var(REASONING_MODEL).ok();
         let completion_model = env::var(COMPLETION_MODEL).ok();
@@ -123,7 +125,7 @@ impl Config {
             port,
             base_url,
             chat_completions_url,
-            api_key,
+            auth_header_value,
             reasoning_model,
             completion_model,
             debug,

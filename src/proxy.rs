@@ -20,8 +20,18 @@ use std::time::Duration;
 
 const UPSTREAM_TIMEOUT_SECS: u64 = 300;
 
+/// Fixed SSE payload for message_stop (avoids per-stream allocation).
+const SSE_MESSAGE_STOP: &[u8] = b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+
 /// SSE headers built once for streaming responses.
 static SSE_HEADERS: OnceLock<HeaderMap> = OnceLock::new();
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockType {
+    Thinking,
+    Text,
+    ToolUse,
+}
 
 fn sse_header_map() -> &'static HeaderMap {
     SSE_HEADERS.get_or_init(|| {
@@ -69,15 +79,15 @@ pub async fn proxy_handler(
 fn build_upstream_request(
     client: &Client,
     url: &str,
-    api_key: Option<&String>,
+    auth_header: Option<&str>,
     body: &openai::OpenAIRequest,
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(url)
         .json(body)
         .timeout(Duration::from_secs(UPSTREAM_TIMEOUT_SECS));
-    if let Some(key) = api_key {
-        builder = builder.header("Authorization", format!("Bearer {key}"));
+    if let Some(h) = auth_header {
+        builder = builder.header("Authorization", h);
     }
     builder
 }
@@ -106,8 +116,8 @@ async fn handle_non_streaming(
 
     let response = build_upstream_request(
         &client,
-        &url,
-        config.api_key.as_ref(),
+        url,
+        config.auth_header_value.as_deref(),
         &openai_req,
     )
     .send()
@@ -145,8 +155,8 @@ async fn handle_streaming(
 
     let response = build_upstream_request(
         &client,
-        &url,
-        config.api_key.as_ref(),
+        url,
+        config.auth_header_value.as_deref(),
         &openai_req,
     )
     .send()
@@ -174,7 +184,7 @@ fn create_sse_stream(
         let mut content_index = 0;
         let mut tool_call_id = None;
         let mut has_sent_message_start = false;
-        let mut current_block_type: Option<String> = None;
+        let mut current_block_type: Option<BlockType> = None;
 
         tokio::pin!(stream);
 
@@ -194,8 +204,7 @@ fn create_sse_stream(
                         for l in line.lines() {
                             let Some(data) = l.strip_prefix("data: ") else { continue };
                             if data.trim() == "[DONE]" {
-                                let data = serde_json::to_string(&json!({"type": "message_stop"})).unwrap_or_default();
-                                yield Ok(sse_event("message_stop", &data));
+                                yield Ok(Bytes::from_static(SSE_MESSAGE_STOP));
                                 continue;
                             }
 
@@ -236,7 +245,7 @@ fn create_sse_stream(
                                     });
                                     let data = serde_json::to_string(&event).unwrap_or_default();
                                     yield Ok(sse_event("content_block_start", &data));
-                                    current_block_type = Some("thinking".to_string());
+                                    current_block_type = Some(BlockType::Thinking);
                                 }
                                 let event = json!({
                                     "type": "content_block_delta",
@@ -249,7 +258,7 @@ fn create_sse_stream(
 
                             if let Some(content) = &choice.delta.content {
                                 if !content.is_empty() {
-                                    if current_block_type.as_deref() != Some("text") {
+                                    if current_block_type != Some(BlockType::Text) {
                                         if current_block_type.is_some() {
                                             let event = json!({"type": "content_block_stop", "index": content_index});
                                             let data = serde_json::to_string(&event).unwrap_or_default();
@@ -263,7 +272,7 @@ fn create_sse_stream(
                                         });
                                         let data = serde_json::to_string(&event).unwrap_or_default();
                                         yield Ok(sse_event("content_block_start", &data));
-                                        current_block_type = Some("text".to_string());
+                                        current_block_type = Some(BlockType::Text);
                                     }
                                     let event = json!({
                                         "type": "content_block_delta",
@@ -299,7 +308,7 @@ fn create_sse_stream(
                                             });
                                             let data = serde_json::to_string(&event).unwrap_or_default();
                                             yield Ok(sse_event("content_block_start", &data));
-                                            current_block_type = Some("tool_use".to_string());
+                                            current_block_type = Some(BlockType::ToolUse);
                                         }
                                         if let Some(args) = &function.arguments {
                                             let event = json!({

@@ -104,13 +104,13 @@ pub fn anthropic_to_openai(
 }
 
 fn openai_message(
-    role: &str,
+    role: impl Into<String>,
     content: Option<openai::MessageContent>,
     tool_calls: Option<Vec<openai::ToolCall>>,
     tool_call_id: Option<String>,
 ) -> openai::Message {
     openai::Message {
-        role: role.to_string(),
+        role: role.into(),
         content,
         tool_calls,
         tool_call_id,
